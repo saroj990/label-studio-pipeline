@@ -1,0 +1,12 @@
+---
+description: Keep pipeline code inside acceptance-model-pipeline; parent folder is legacy CLI only
+alwaysApply: true
+---
+
+# Acceptance model pipeline scope
+
+- The **git repository root** is `acceptance-model-pipeline/`. Run `git` commands from this directory.
+- **All new application code** (backend, frontend, docs, config) belongs under `acceptance-model-pipeline/`.
+- The **parent directory** (`page-classifier/`) holds legacy CLI scripts (`train.py`, `prepare_dataset.py`, `predict.py`, `model.pth`, etc.). Do **not** move or rewrite those unless the user explicitly asks.
+- **No Docker** for this pipeline: run Label Studio, backend, and frontend on the **host**. Training must use host PyTorch (MPS / CUDA / CPU).
+- Prefer **granular commits** aligned with steps in `plan.md` (one logical change per commit).
