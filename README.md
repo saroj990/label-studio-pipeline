@@ -11,7 +11,7 @@ See [`plan.md`](plan.md) for step-by-step training and testing, and the intended
 - Python 3.11+
 - Node.js 18+
 - [Label Studio](https://labelstud.io/) running locally, e.g. `label-studio start` → http://localhost:8080
-- Label Studio **API token** (Account & Settings → Access Token)
+- Label Studio **API token** — **not** needed for app login; required when you **create a project** or use labeling/training. In Label Studio: user icon → **Account & Settings** → **Legacy Token** (copy into `.env`) *or* **Personal Access Token** (JWT; backend exchanges it automatically). Do **not** confuse with the app’s JWT login token.
 
 ## Setup
 

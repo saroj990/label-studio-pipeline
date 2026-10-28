@@ -181,16 +181,27 @@ def list_tasks(
     result: list[TaskResponse] = []
 
     for task in tasks:
+        if not isinstance(task, dict):
+            continue
         data = task.get("data") or {}
-        image_url = str(data.get("image") or "")
+        if isinstance(data, str):
+            image_url = data
+            data = {}
+        else:
+            image_url = str(data.get("image") or data.get("image_url") or "")
         meta = task.get("meta") or {}
+        if not isinstance(meta, dict):
+            meta = {}
         filename = meta.get("filename")
         if not filename and image_url:
             filename = Path(image_url).name
         label = parse_label(task, class_names)
+        task_id = task.get("id")
+        if task_id is None:
+            continue
         result.append(
             TaskResponse(
-                id=int(task["id"]),
+                id=int(task_id),
                 image_url=image_url,
                 filename=filename,
                 label=label,

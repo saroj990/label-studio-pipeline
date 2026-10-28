@@ -5,6 +5,7 @@ __pycache__/
 backend/.venv/
 node_modules/
 frontend/dist/
+frontend/tsconfig.tsbuildinfo
 data/
 *.db
 .DS_Store
