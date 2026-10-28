@@ -76,7 +76,8 @@ export const api = {
     }),
   tasks: (projectId: number) =>
     request<Task[]>(`/projects/${projectId}/tasks`),
-  upload: (projectId: number, files: FileList) => {
+  /** Use the same field name repeatedly so FastAPI receives a list of files. */
+  upload: (projectId: number, files: FileList | File[]) => {
     const form = new FormData();
     Array.from(files).forEach((f) => form.append("files", f));
     return request<{ uploaded: string[]; count: number }>(
@@ -106,3 +107,17 @@ export const api = {
   },
   downloadModelUrl: (projectId: number) => `/projects/${projectId}/models/latest`,
 };
+
+/** Route gallery images through the Vite proxy when possible. */
+export function taskImageSrc(imageUrl: string): string {
+  try {
+    const parsed = new URL(imageUrl);
+    if (parsed.pathname.startsWith("/api/media/")) {
+      return `${parsed.pathname}${parsed.search}`;
+    }
+  } catch {
+    /* relative or invalid */
+  }
+  if (imageUrl.startsWith("/api/media/")) return imageUrl;
+  return imageUrl;
+}
