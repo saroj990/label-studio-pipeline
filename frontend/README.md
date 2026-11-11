@@ -34,4 +34,4 @@ Open **http://localhost:5173**. Vite proxies `/api` requests to the backend.
 - **Workspace** — upload, label, train, download `.pth`
 - **Test** — upload one image and view class scores
 
-See the [pipeline README](../README.md) for prerequisites and the full checklist.
+See the [main README](../README.md) for prerequisites and the full checklist. For a CLI-only path, see [cli/README.md](../cli/README.md).

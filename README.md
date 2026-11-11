@@ -1,69 +1,101 @@
-# Acceptance model pipeline
+# Page classifier (acceptance model pipeline)
 
-Web app to upload images, label them (React UI and/or Label Studio), train a binary classifier on the **host** (Apple **MPS**, NVIDIA **CUDA**, or CPU), export the model, and test on new images.
+Train a **two-class image classifier**—for example blank vs filled pages—from photos. Two ways to work:
 
-The parent [`page-classifier`](../) directory keeps the original CLI scripts unchanged. This folder is the **git repository root**.
+| Path | Best when |
+|------|-----------|
+| **[Web app](#web-app)** | You want upload, labeling, training, and testing in the browser |
+| **[CLI](cli/README.md)** | You already have a Label Studio JSON export and prefer three Python commands |
 
-See [`plan.md`](plan.md) for step-by-step training and testing, and the intended **granular commit** sequence.
+Both use **MobileNet V3 Small** (PyTorch) on your machine: Apple **MPS**, NVIDIA **CUDA**, or **CPU**.
 
-## Prerequisites
+---
 
-- Python 3.11+
-- Node.js 18+
-- [Label Studio](https://labelstud.io/) running locally, e.g. `label-studio start` → http://localhost:8080
-- Label Studio **API token** — **not** needed for app login; required when you **create a project** or use labeling/training. In Label Studio: user icon → **Account & Settings** → **Legacy Token** (copy into `.env`) *or* **Personal Access Token** (JWT; backend exchanges it automatically). Do **not** confuse with the app’s JWT login token.
+## Web app
 
-## Setup
+### What runs where
+
+```text
+Browser (localhost:5173)  →  FastAPI (localhost:8000)  →  Label Studio (localhost:8080)
+                              train / predict on GPU or CPU
+```
+
+### Prerequisites
+
+- Python 3.11+, Node.js 18+
+- [Label Studio](https://labelstud.io/) for project sync (e.g. `label-studio start` → http://localhost:8080)
+- Label Studio **API token** in `.env` (Account → Legacy Token or Personal Access Token). This is **not** the same as your app login JWT.
+
+### First-time setup
 
 ```bash
-cd acceptance-model-pipeline
 cp .env.example .env
-# Edit .env: LABEL_STUDIO_API_TOKEN, JWT_SECRET, PUBLIC_BASE_URL
+# Set LABEL_STUDIO_API_TOKEN, JWT_SECRET, PUBLIC_BASE_URL=http://localhost:8000
 
-cd backend
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+cd backend && python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-cd ../frontend
-npm install
+cd ../frontend && npm install
 ```
 
-## Run (host)
-
-Terminal 1 — backend:
+### Start
 
 ```bash
-cd backend
-source .venv/bin/activate
+# Terminal 1 — optional but required to create projects
+label-studio start
+
+# Terminal 2
+cd backend && source .venv/bin/activate
 uvicorn app.main:app --reload --port 8000
+
+# Terminal 3
+cd frontend && npm run dev
 ```
 
-Terminal 2 — frontend:
+Open **http://localhost:5173**. API docs: **http://localhost:8000/docs**.
+
+Label Studio must reach uploaded images via `PUBLIC_BASE_URL` (usually `http://localhost:8000/api/media/...`).
+
+### Workflow in the UI
+
+1. **Register / log in**
+2. **Create project** — pick two class names (e.g. blank, filled)
+3. **Upload** images in the workspace
+4. **Label** each image (in-app or via the Label Studio link)
+5. **Train model** — needs ≥2 images per class; progress shows in the UI
+6. **Download** `.pth` or use **Test** with a new photo
+
+Training copies images into `data/projects/{id}/staging/`; originals stay in `uploads/`. Project data is gitignored.
+
+More detail: [backend/README.md](backend/README.md), [frontend/README.md](frontend/README.md).
+
+---
+
+## CLI
+
+Label in Label Studio → export JSON → prepare → train → predict.
+
+Full instructions: **[cli/README.md](cli/README.md)**.
 
 ```bash
-cd frontend
-npm run dev
+# From repo root, with backend venv active:
+python cli/prepare_dataset.py   # expects cli/export.json
+python cli/train.py             # writes cli/model.pth
+python cli/predict.py path/to/image.jpg
 ```
 
-Open http://localhost:5173
+---
 
-Ensure `PUBLIC_BASE_URL` in `.env` matches how Label Studio reaches images (usually `http://localhost:8000`). Label Studio must be able to fetch `/api/media/...` URLs when displaying tasks.
+## Repository layout
 
-## Training vs testing (summary)
+```text
+acceptance-model-pipeline/
+├── README.md          ← you are here
+├── cli/               ← Label Studio export workflow
+├── backend/           ← FastAPI + training services
+├── frontend/          ← React UI
+├── .env.example       ← copy to .env (never commit .env)
+└── data/              ← created at runtime (gitignored)
+```
 
-| Step | Where |
-|------|--------|
-| Register / login | App UI |
-| Create project | App UI (creates Label Studio project) |
-| Upload images | App workspace |
-| Label | App buttons and/or Label Studio link |
-| Train | App **Train model** (uses MPS/CUDA/CPU on host) |
-| Export | **Download model** → `.pth` |
-| Test | **Test model** page → upload one image |
-
-Original uploads stay in `data/projects/{id}/uploads/`. Training copies into `data/projects/{id}/staging/{run_id}/` only.
-
-## API docs
-
-With backend running: http://localhost:8000/docs
+Implementation notes for contributors: [plan.md](plan.md).

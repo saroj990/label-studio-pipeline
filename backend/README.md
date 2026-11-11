@@ -36,4 +36,4 @@ Label Studio must be running separately when you create projects or sync labels 
 
 Project data (uploads, staging datasets, models) lives under `data/` at the pipeline root (gitignored).
 
-See the [pipeline README](../README.md) for the full end-to-end workflow.
+See the [main README](../README.md) for the web workflow, or [cli/README.md](../cli/README.md) for export-only training.

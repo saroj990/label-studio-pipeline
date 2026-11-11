@@ -4,7 +4,7 @@ Host-only setup (no Docker). Training uses PyTorch on the host: **MPS** on Apple
 
 Label Studio runs separately on the host; the backend talks to it via API (`LABEL_STUDIO_URL`, `LABEL_STUDIO_API_TOKEN`).
 
-Parent folder [`../`](../) (CLI scripts `train.py`, `prepare_dataset.py`, etc.) stays unchanged. All application code lives in this directory; **git root is here**.
+All application code lives in this directory (**git root**). Standalone CLI: [`cli/`](cli/README.md).
 
 ---
 
