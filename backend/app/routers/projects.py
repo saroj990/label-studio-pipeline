@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
-import shutil
+import queue
+import threading
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.auth.deps import get_current_user
@@ -16,21 +17,44 @@ from app.schemas.projects import (
     PredictResponse,
     ProjectCreate,
     ProjectResponse,
+    SaveModelRequest,
+    SavedModelResponse,
     TaskResponse,
     TrainResponse,
 )
-from app.services.dataset import build_dataset_from_export, parse_label
+from app.services.dataset import parse_label
 from app.services.label_studio import LabelStudioClient, LabelStudioError
-from app.services.paths import (
-    media_url,
-    models_dir,
-    staging_dataset_dir,
-    uploads_dir,
-)
+from app.services.paths import media_url, models_dir, uploads_dir
 from app.services.predict_service import predict_image
-from app.services.train_service import train_image_folder
+from app.services.training_run import run_training, run_training_persisted
 
 router = APIRouter(prefix="/projects", tags=["projects"])
+
+
+def _resolve_training_run(project: Project, db: Session) -> TrainingRun | None:
+    if project.active_training_run_id:
+        run = (
+            db.query(TrainingRun)
+            .filter(
+                TrainingRun.id == project.active_training_run_id,
+                TrainingRun.project_id == project.id,
+                TrainingRun.status == "done",
+                TrainingRun.model_path.isnot(None),
+            )
+            .first()
+        )
+        if run:
+            return run
+    return (
+        db.query(TrainingRun)
+        .filter(
+            TrainingRun.project_id == project.id,
+            TrainingRun.status == "done",
+            TrainingRun.model_path.isnot(None),
+        )
+        .order_by(TrainingRun.id.desc())
+        .first()
+    )
 
 
 def get_owned_project(
@@ -250,42 +274,19 @@ def train_project(
     db.commit()
     db.refresh(run)
 
-    ls = LabelStudioClient()
     try:
-        export = ls.export_json(project.label_studio_project_id)
-        class_names = (project.class_a, project.class_b)
-        dataset_path = staging_dataset_dir(project, run.id)
-
-        if dataset_path.exists():
-            shutil.rmtree(dataset_path)
-
-        counts = build_dataset_from_export(
-            export,
-            uploads_dir(project),
-            dataset_path,
-            class_names,
-        )
-
-        per_class = {k: v for k, v in counts.items() if not k.startswith("_")}
-        if min(per_class.values()) < 2:
-            run.status = "failed"
-            run.error_message = (
-                f"Need at least 2 labeled images per class. Counts: {per_class}"
-            )
-            db.commit()
-            raise HTTPException(status_code=400, detail=run.error_message)
-
-        model_path = models_dir(project) / f"run_{run.id}.pth"
-        metrics = train_image_folder(dataset_path, model_path)
-
+        result = run_training(project, run.id)
         run.status = "done"
-        run.model_path = str(model_path)
-        run.metrics_json = json.dumps(metrics)
+        run.model_path = result["model_path"]
+        run.metrics_json = json.dumps(result["metrics"])
         db.commit()
-
-        return TrainResponse(run_id=run.id, status=run.status, metrics=metrics)
-    except HTTPException:
-        raise
+        return TrainResponse(
+            run_id=run.id,
+            status=run.status,
+            metrics=result["metrics"],
+            model_filename=result["model_filename"],
+            model_path=result["model_path"],
+        )
     except (LabelStudioError, ValueError) as exc:
         run.status = "failed"
         run.error_message = str(exc)
@@ -298,6 +299,107 @@ def train_project(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@router.post("/{project_id}/train/stream")
+def train_project_stream(
+    project_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project = get_owned_project(project_id, user, db)
+    if not project.label_studio_project_id:
+        raise HTTPException(status_code=400, detail="No Label Studio project linked")
+
+    run = TrainingRun(project_id=project.id, status="pending")
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+
+    event_queue: queue.Queue[dict | None] = queue.Queue()
+
+    def worker() -> None:
+        run_training_persisted(project.id, run.id, event_queue.put)
+        event_queue.put(None)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    def generate():
+        while True:
+            item = event_queue.get()
+            if item is None:
+                break
+            yield f"data: {json.dumps(item)}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/{project_id}/models/active", response_model=SavedModelResponse | None)
+def get_active_model(
+    project_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project = get_owned_project(project_id, user, db)
+    run = _resolve_training_run(project, db)
+    if not run or not run.model_path:
+        return None
+    path = Path(run.model_path)
+    return SavedModelResponse(
+        run_id=run.id,
+        model_filename=path.name,
+        model_path=str(path),
+        saved=project.active_training_run_id == run.id,
+    )
+
+
+@router.post("/{project_id}/models/save", response_model=SavedModelResponse)
+def save_active_model(
+    project_id: int,
+    body: SaveModelRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project = get_owned_project(project_id, user, db)
+    run: TrainingRun | None = None
+    if body.run_id is not None:
+        run = (
+            db.query(TrainingRun)
+            .filter(
+                TrainingRun.id == body.run_id,
+                TrainingRun.project_id == project.id,
+                TrainingRun.status == "done",
+                TrainingRun.model_path.isnot(None),
+            )
+            .first()
+        )
+    else:
+        run = _resolve_training_run(project, db)
+
+    if not run or not run.model_path:
+        raise HTTPException(status_code=404, detail="No trained model to save")
+
+    path = Path(run.model_path)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Model file missing on disk")
+
+    project.active_training_run_id = run.id
+    db.commit()
+
+    return SavedModelResponse(
+        run_id=run.id,
+        model_filename=path.name,
+        model_path=str(path),
+        saved=True,
+    )
+
+
 @router.get("/{project_id}/models/latest")
 def download_latest_model(
     project_id: int,
@@ -305,16 +407,7 @@ def download_latest_model(
     db: Session = Depends(get_db),
 ):
     project = get_owned_project(project_id, user, db)
-    run = (
-        db.query(TrainingRun)
-        .filter(
-            TrainingRun.project_id == project.id,
-            TrainingRun.status == "done",
-            TrainingRun.model_path.isnot(None),
-        )
-        .order_by(TrainingRun.id.desc())
-        .first()
-    )
+    run = _resolve_training_run(project, db)
     if not run or not run.model_path:
         raise HTTPException(status_code=404, detail="No trained model yet")
 
@@ -325,7 +418,7 @@ def download_latest_model(
     return FileResponse(
         path,
         media_type="application/octet-stream",
-        filename=f"project_{project.id}_model.pth",
+        filename=path.name,
     )
 
 
@@ -337,18 +430,12 @@ async def predict(
     db: Session = Depends(get_db),
 ):
     project = get_owned_project(project_id, user, db)
-    run = (
-        db.query(TrainingRun)
-        .filter(
-            TrainingRun.project_id == project.id,
-            TrainingRun.status == "done",
-            TrainingRun.model_path.isnot(None),
-        )
-        .order_by(TrainingRun.id.desc())
-        .first()
-    )
+    run = _resolve_training_run(project, db)
     if not run or not run.model_path:
-        raise HTTPException(status_code=400, detail="Train a model before predicting")
+        raise HTTPException(
+            status_code=400,
+            detail="Save or train a model before predicting",
+        )
 
     model_path = Path(run.model_path)
     if not model_path.is_file():

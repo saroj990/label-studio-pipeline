@@ -1,10 +1,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.database import Base, engine
+from app.database import Base, apply_sqlite_migrations, engine
 from app.routers import auth, media, projects
 
 Base.metadata.create_all(bind=engine)
+apply_sqlite_migrations()
 
 app = FastAPI(title="Acceptance Model Pipeline")
 

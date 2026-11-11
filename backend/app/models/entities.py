@@ -28,13 +28,18 @@ class Project(Base):
     class_a: Mapped[str] = mapped_column(String(64))
     class_b: Mapped[str] = mapped_column(String(64))
     label_studio_project_id: Mapped[int | None] = mapped_column(nullable=True)
+    active_training_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("training_runs.id"),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
     owner: Mapped["User"] = relationship(back_populates="projects")
     training_runs: Mapped[list["TrainingRun"]] = relationship(
-        back_populates="project"
+        back_populates="project",
+        foreign_keys="TrainingRun.project_id",
     )
 
 
@@ -51,4 +56,7 @@ class TrainingRun(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    project: Mapped["Project"] = relationship(back_populates="training_runs")
+    project: Mapped["Project"] = relationship(
+        back_populates="training_runs",
+        foreign_keys=[project_id],
+    )

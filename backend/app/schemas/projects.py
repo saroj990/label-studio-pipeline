@@ -33,8 +33,21 @@ class TrainResponse(BaseModel):
     status: str
     metrics: dict | None = None
     message: str | None = None
+    model_filename: str | None = None
+    model_path: str | None = None
 
 
 class PredictResponse(BaseModel):
     prediction: str
     scores: dict[str, float]
+
+
+class SaveModelRequest(BaseModel):
+    run_id: int | None = None
+
+
+class SavedModelResponse(BaseModel):
+    run_id: int
+    model_filename: str
+    model_path: str
+    saved: bool = True

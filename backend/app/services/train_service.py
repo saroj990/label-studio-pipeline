@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import torch
@@ -17,10 +18,14 @@ def get_device() -> torch.device:
     return torch.device("cpu")
 
 
+EpochCallback = Callable[[int, int, float, float], None]
+
+
 def train_image_folder(
     dataset_dir: Path,
     out_path: Path,
     epochs: int = 15,
+    on_epoch: EpochCallback | None = None,
 ) -> dict:
     device = get_device()
 
@@ -67,7 +72,7 @@ def train_image_folder(
     final_loss = 0.0
     final_accuracy = 0.0
 
-    for _epoch in range(epochs):
+    for epoch_index in range(epochs):
         model.train()
         total_loss = 0.0
         correct = 0
@@ -89,6 +94,8 @@ def train_image_folder(
 
         final_loss = total_loss / seen if seen else 0.0
         final_accuracy = 100 * correct / seen if seen else 0.0
+        if on_epoch:
+            on_epoch(epoch_index + 1, epochs, final_loss, final_accuracy)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
