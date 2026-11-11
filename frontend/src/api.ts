@@ -50,6 +50,19 @@ export type Task = {
   label: string | null;
 };
 
+export type TrainProgressEvent = {
+  stage: string;
+  message?: string;
+  epoch?: number;
+  total_epochs?: number;
+  loss?: number;
+  training_accuracy?: number;
+  run_id?: number;
+  model_filename?: string;
+  model_path?: string;
+  metrics?: Record<string, unknown>;
+};
+
 export const api = {
   register: (email: string, password: string) =>
     request<User>("/auth/register", {
@@ -91,10 +104,56 @@ export const api = {
       body: JSON.stringify({ choice }),
     }),
   train: (projectId: number) =>
-    request<{ run_id: number; status: string; metrics?: Record<string, unknown> }>(
-      `/projects/${projectId}/train`,
-      { method: "POST" },
-    ),
+    request<{
+      run_id: number;
+      status: string;
+      metrics?: Record<string, unknown>;
+      model_filename?: string;
+      model_path?: string;
+    }>(`/projects/${projectId}/train`, { method: "POST" }),
+
+  trainStream: async (
+    projectId: number,
+    onEvent: (event: TrainProgressEvent) => void,
+  ) => {
+    const token = getToken();
+    const response = await fetch(`/projects/${projectId}/train/stream`, {
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!response.ok) {
+      let detail = response.statusText;
+      try {
+        const body = await response.json();
+        detail = body.detail ?? JSON.stringify(body);
+      } catch {
+        /* ignore */
+      }
+      throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    }
+    if (!response.body) throw new Error("No response body");
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop() ?? "";
+      for (const part of parts) {
+        const line = part.split("\n").find((l) => l.startsWith("data: "));
+        if (!line) continue;
+        const event = JSON.parse(line.slice(6)) as TrainProgressEvent;
+        onEvent(event);
+        if (event.stage === "error") {
+          throw new Error(event.message ?? "Training failed");
+        }
+      }
+    }
+  },
   labelStudioUrl: (projectId: number) =>
     request<{ url: string }>(`/projects/${projectId}/label-studio-url`),
   predict: async (projectId: number, file: File) => {
@@ -106,6 +165,25 @@ export const api = {
     );
   },
   downloadModelUrl: (projectId: number) => `/projects/${projectId}/models/latest`,
+
+  saveModel: (projectId: number, runId?: number) =>
+    request<{
+      run_id: number;
+      model_filename: string;
+      model_path: string;
+      saved: boolean;
+    }>(`/projects/${projectId}/models/save`, {
+      method: "POST",
+      body: JSON.stringify(runId != null ? { run_id: runId } : {}),
+    }),
+
+  activeModel: (projectId: number) =>
+    request<{
+      run_id: number;
+      model_filename: string;
+      model_path: string;
+      saved: boolean;
+    } | null>(`/projects/${projectId}/models/active`),
 };
 
 /** Route gallery images through the Vite proxy when possible. */

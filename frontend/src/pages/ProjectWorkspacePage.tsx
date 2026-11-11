@@ -1,18 +1,57 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import UploadDropzone from "../components/UploadDropzone";
-import { api, Project, Task, getToken, taskImageSrc } from "../api";
+import {
+  api,
+  Project,
+  Task,
+  TrainProgressEvent,
+  getToken,
+  taskImageSrc,
+} from "../api";
+
+type TrainComplete = {
+  runId: number;
+  modelFilename: string;
+  modelPath: string;
+  metrics?: Record<string, unknown>;
+};
+
+function progressPercent(event: TrainProgressEvent | null): number {
+  if (!event) return 0;
+  switch (event.stage) {
+    case "export":
+      return 10;
+    case "dataset":
+      return 18;
+    case "train":
+      return 22;
+    case "epoch":
+      if (event.epoch && event.total_epochs) {
+        return 25 + (event.epoch / event.total_epochs) * 70;
+      }
+      return 30;
+    case "complete":
+      return 100;
+    default:
+      return 0;
+  }
+}
 
 export default function ProjectWorkspacePage() {
+  const navigate = useNavigate();
   const { projectId } = useParams();
   const id = Number(projectId);
   const [project, setProject] = useState<Project | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [training, setTraining] = useState(false);
+  const [trainEvent, setTrainEvent] = useState<TrainProgressEvent | null>(null);
+  const [trainComplete, setTrainComplete] = useState<TrainComplete | null>(null);
   const [uploading, setUploading] = useState(false);
   const [filter, setFilter] = useState<"all" | "unlabeled" | "labeled">("all");
   const [labelingId, setLabelingId] = useState<number | null>(null);
+  const [saving, setSaving] = useState(false);
 
   const refresh = useCallback(async () => {
     const list = await api.projects();
@@ -60,17 +99,54 @@ export default function ProjectWorkspacePage() {
   async function onTrain() {
     setTraining(true);
     setError(null);
+    setTrainComplete(null);
+    setTrainEvent({ stage: "export", message: "Starting training…" });
     try {
-      await api.train(id);
+      await api.trainStream(id, (event) => {
+        setTrainEvent(event);
+        if (
+          event.stage === "complete" &&
+          event.run_id != null &&
+          event.model_filename &&
+          event.model_path
+        ) {
+          setTrainComplete({
+            runId: event.run_id,
+            modelFilename: event.model_filename,
+            modelPath: event.model_path,
+            metrics: event.metrics,
+          });
+        }
+      });
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Train failed");
+      setTrainEvent(null);
     } finally {
       setTraining(false);
     }
   }
 
-  async function downloadModel() {
+  async function onSaveAndTest() {
+    if (!trainComplete) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await api.saveModel(id, trainComplete.runId);
+      navigate(`/projects/${id}/test`, {
+        state: {
+          justSaved: true,
+          modelFilename: trainComplete.modelFilename,
+        },
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function downloadModel(filename?: string) {
     const token = getToken();
     const res = await fetch(api.downloadModelUrl(id), {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -79,7 +155,7 @@ export default function ProjectWorkspacePage() {
     const blob = await res.blob();
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `project_${id}_model.pth`;
+    a.download = filename ?? trainComplete?.modelFilename ?? `project_${id}_model.pth`;
     a.click();
   }
 
@@ -206,22 +282,78 @@ export default function ProjectWorkspacePage() {
         </div>
       </section>
 
-      <details className="card advanced">
-        <summary>Train &amp; export</summary>
+      <section className="card train-section">
+        <h2 className="flow-step">3. Train model</h2>
         <p className="muted">
-          Need at least 2 images per class.{" "}
+          Need at least 2 labeled images per class.{" "}
           {!canTrain && "(not enough labeled images yet)"}
         </p>
-        <div className="row">
+
+        {(training || trainComplete) && (
+          <div className="train-progress-panel">
+            <p className="train-status">
+              {training
+                ? trainEvent?.message ?? "Training model…"
+                : "Training complete"}
+            </p>
+            <div
+              className="progress-track"
+              role="progressbar"
+              aria-valuenow={Math.round(progressPercent(trainEvent))}
+              aria-valuemin={0}
+              aria-valuemax={100}
+            >
+              <div
+                className="progress-fill"
+                style={{ width: `${progressPercent(trainEvent)}%` }}
+              />
+            </div>
+            {trainEvent?.stage === "epoch" && (
+              <p className="muted train-metrics">
+                Epoch {trainEvent.epoch}/{trainEvent.total_epochs}
+                {trainEvent.training_accuracy != null &&
+                  ` · accuracy ${trainEvent.training_accuracy}%`}
+              </p>
+            )}
+          </div>
+        )}
+
+        {trainComplete && (
+          <div className="train-result">
+            <p>
+              <strong>Model file:</strong>{" "}
+              <code>{trainComplete.modelFilename}</code>
+            </p>
+            <p className="muted model-path">{trainComplete.modelPath}</p>
+            {trainComplete.metrics?.device != null && (
+              <p className="muted">
+                Trained on {String(trainComplete.metrics.device)} · training
+                accuracy {String(trainComplete.metrics.training_accuracy)}%
+              </p>
+            )}
+            <p className="muted">
+              Save this model, then try it on a new photo on the next screen.
+            </p>
+            <button
+              type="button"
+              onClick={onSaveAndTest}
+              disabled={saving}
+            >
+              {saving ? "Saving…" : "Save model & test →"}
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => downloadModel().catch((e) => setError(String(e)))}
+            >
+              Download {trainComplete.modelFilename}
+            </button>
+          </div>
+        )}
+
+        <div className="row train-actions">
           <button type="button" onClick={onTrain} disabled={training || !canTrain}>
-            {training ? "Training…" : "Train model"}
-          </button>
-          <button
-            type="button"
-            className="secondary"
-            onClick={() => downloadModel().catch((e) => setError(String(e)))}
-          >
-            Download model
+            {training ? "Training…" : trainComplete ? "Train again" : "Train model"}
           </button>
           <button
             type="button"
@@ -233,7 +365,7 @@ export default function ProjectWorkspacePage() {
             Open in Label Studio
           </button>
         </div>
-      </details>
+      </section>
     </div>
   );
 }

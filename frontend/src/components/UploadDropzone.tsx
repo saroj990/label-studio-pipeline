@@ -2,10 +2,19 @@ import { DragEvent, useRef, useState } from "react";
 
 type Props = {
   disabled?: boolean;
+  multiple?: boolean;
+  title?: string;
+  hint?: string;
   onFiles: (files: File[]) => void | Promise<void>;
 };
 
-export default function UploadDropzone({ disabled, onFiles }: Props) {
+export default function UploadDropzone({
+  disabled,
+  multiple = true,
+  title,
+  hint,
+  onFiles,
+}: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
 
@@ -46,15 +55,19 @@ export default function UploadDropzone({ disabled, onFiles }: Props) {
         ref={inputRef}
         type="file"
         accept="image/*"
-        multiple
+        multiple={multiple}
         hidden
         disabled={disabled}
         onChange={(e) => void handleFiles(e.target.files)}
       />
       <p className="dropzone-title">
-        {disabled ? "Uploading…" : "Drop images here or click to browse"}
+        {disabled
+          ? "Uploading…"
+          : (title ?? "Drop images here or click to browse")}
       </p>
-      <p className="muted">Select many files at once · JPG, PNG, etc.</p>
+      <p className="muted">
+        {hint ?? (multiple ? "Select many files at once · JPG, PNG, etc." : "One image · JPG, PNG, etc.")}
+      </p>
     </div>
   );
 }
